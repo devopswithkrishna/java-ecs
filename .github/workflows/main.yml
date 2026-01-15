@@ -35,14 +35,23 @@ jobs:
     - name: Build & Push Docker Image
       id: build-image
       run: |
-        REPOSITORY_URI=336449586386.dkr.ecr.us-east-1.amazonaws.com
+        # Use variables to prevent typos
+        REGISTRY=336449586386.dkr.ecr.us-east-1.amazonaws.com
+        REPOSITORY=health-api
         IMAGE_TAG=${{ github.sha }}
+        FULL_IMAGE_URI=$REGISTRY/$REPOSITORY:$IMAGE_TAG
+
+        # Build with the FULL ECR URI to prevent Docker from defaulting to Docker Hub
+        docker build -t $FULL_IMAGE_URI .
         
-        # Build and push with unique SHA tag
-        docker build -t $REPOSITORY_URI:$IMAGE_TAG .
-        docker push $REPOSITORY_URI:$IMAGE_TAG
+        # Tag it as latest as well
+        docker tag $FULL_IMAGE_URI $REGISTRY/$REPOSITORY:latest
         
-        echo "image=$REPOSITORY_URI:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        # Push both tags to ECR
+        docker push $FULL_IMAGE_URI
+        docker push $REGISTRY/$REPOSITORY:latest
+        
+        echo "image=$FULL_IMAGE_URI" >> $GITHUB_OUTPUT
 
     - name: Execute Deployment Script
       run: |
@@ -51,10 +60,10 @@ jobs:
           SERVICE_NAME=health-api-service
           IMAGE_URI=${{ steps.build-image.outputs.image }}
           
-          # 1. Update task-definition.json with the new unique Image URI
+          # 1. Update task-definition.json using jq (targets first container in array)
           jq --arg IMG "$IMAGE_URI" '.containerDefinitions[0].image = $IMG' task-definition.json > final-taskdef.json
           
-          # 2. Register the new revision
+          # 2. Register the new Task Definition revision
           NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json file://final-taskdef.json --region ${REGION})
           REVISION=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.revision)
           FAMILY=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.family)
@@ -64,7 +73,7 @@ jobs:
           
           if [ "$SERVICE_EXISTS" -gt "0" ]; then
             echo "Updating existing service to revision $REVISION..."
-            # Use --force-new-deployment to ensure ECS pulls the new image tag immediately
+            # --force-new-deployment ensures the new image is pulled on EC2
             aws ecs update-service \
               --cluster ${CLUSTER} \
               --service ${SERVICE_NAME} \
@@ -73,7 +82,7 @@ jobs:
               --region ${REGION}
           else
             echo "Creating new EC2 service..."
-            # 4. Get Network Config (Required for awsvpc mode)
+            # 4. Get Network Configuration for awsvpc mode
             VPC_ID=$(aws ec2 describe-subnets --region ${REGION} --query 'Subnets[0].VpcId' --output text)
             SUBNETS=$(aws ec2 describe-subnets --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | sed 's/\t/,/g')
             SEC_GROUP=$(aws ec2 describe-security-groups --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text)
