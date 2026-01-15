@@ -31,7 +31,7 @@ jobs:
     - name: Login to ECR
       run: |
         aws ecr get-login-password --region ap-south-1 \
-        | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+        | docker login --username devops --password-stdin ${{ secrets.ECR_REGISTRY }}
 
     - name: Build & Push Docker Image
       run: |
