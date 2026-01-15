@@ -35,57 +35,48 @@ jobs:
     - name: Build & Push Docker Image
       id: build-image
       run: |
-        docker build -t health-api .
-        docker tag health-api:latest 336449586386.dkr.ecr.us-east-1.amazonaws.com/health-api:latest
-        docker push 336449586386.dkr.ecr.us-east-1.amazonaws.com/health-api:latest
+        REPOSITORY_URI=336449586386.dkr.ecr.us-east-1.amazonaws.com
+        IMAGE_TAG=${{ github.sha }}
         
-        # Output the image URI for the next step
-        echo "image=336449586386.dkr.ecr.us-east-1.amazonaws.com/health-api:latest" >> $GITHUB_OUTPUT
-
-    - name: Fill in the new image ID in the Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json
-        container-name: health-api-container  # Must match the "name" in your JSON
-        image: ${{ steps.build-image.outputs.image }}
+        # Build and push using the SHA tag to ensure uniqueness
+        docker build -t $REPOSITORY_URI:$IMAGE_TAG -t $REPOSITORY_URI:latest .
+        docker push $REPOSITORY_URI:$IMAGE_TAG
+        docker push $REPOSITORY_URI:latest
+        
+        echo "image=$REPOSITORY_URI:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
     - name: Execute Deployment Script
       run: |
           REGION=us-east-1
-          REPOSITORY_NAME=health-api
           CLUSTER=health-api-cluster
           SERVICE_NAME=health-api-service
-          IMAGE_TAG=${{ github.sha }}
+          IMAGE_URI=${{ steps.build-image.outputs.image }}
           
-          # 1. Get Repository URI
-          REPOSITORY_URI=$(aws ecr describe-repositories --repository-names ${REPOSITORY_NAME} --region ${REGION} | jq -r .repositories[].repositoryUri)
+          # 1. Update JSON with the specific Image URI pushed above
+          # Added [0] to correctly target the first container in the array
+          jq --arg IMG "$IMAGE_URI" '.containerDefinitions[0].image = $IMG' task-definition.json > final-taskdef.json
           
-          # 2. Update JSON with the new Image URI using jq
-          jq --arg IMG "$REPOSITORY_URI:$IMAGE_TAG" '.containerDefinitions[0].image = $IMG' task-definition.json > final-taskdef.json
-
-          # 3. Register the task definition
+          # 2. Register the task definition
           NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json file://final-taskdef.json --region ${REGION})
           REVISION=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.revision)
           FAMILY=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.family)
-
-          # 4. Check if service exists
+          
+          # 3. Check if service exists
           SERVICE_EXISTS=$(aws ecs describe-services --services ${SERVICE_NAME} --cluster ${CLUSTER} --region ${REGION} | jq -r '.services | length')
-
+          
           if [ "$SERVICE_EXISTS" -gt "0" ]; then
-            echo "Updating existing service..."
+            echo "Updating existing service to revision $REVISION..."
             aws ecs update-service --cluster ${CLUSTER} --region ${REGION} --service ${SERVICE_NAME} --task-definition ${FAMILY}:${REVISION}
           else
             echo "Creating new EC2 service..."
-
-            # 5. GET VPC ID from a Subnet or existing EC2 instance in the cluster
-            # This fetches the VPC ID of the first subnet found in the region to ensure consistency
+            
+            # 4. Get VPC ID (ensures subnets are all from the same VPC)
             VPC_ID=$(aws ec2 describe-subnets --region ${REGION} --query 'Subnets[0].VpcId' --output text)
             
-            # 6. GET Subnets and Security Group for THAT SPECIFIC VPC
+            # 5. Get Subnets and Security Group for that VPC
             SUBNETS=$(aws ec2 describe-subnets --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | sed 's/\t/,/g')
             SEC_GROUP=$(aws ec2 describe-security-groups --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text)
-
+            
             aws ecs create-service \
               --service-name ${SERVICE_NAME} \
               --cluster ${CLUSTER} \
@@ -95,4 +86,3 @@ jobs:
               --desired-count 1 \
               --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SEC_GROUP],assignPublicIp=DISABLED}"
           fi
-
