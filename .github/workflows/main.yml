@@ -50,10 +50,29 @@ jobs:
         container-name: health-api-container  # Must match the "name" in your JSON
         image: ${{ steps.build-image.outputs.image }}
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: health-api-service
-        cluster: health-api-cluster
-        wait-for-service-stability: true
+    - name: Deploy to Amazon ECS (EC2 Launch Type)
+      env:
+        CLUSTER_NAME: health-api-cluster
+        SERVICE_NAME: health-api-service
+        TASK_DEFINITION_FILE: ${{ steps.task-def.outputs.task-definition }}
+      run: |
+        # 1. Register the new task definition revision
+        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json "file://$TASK_DEFINITION_FILE" --query 'taskDefinition.taskDefinitionArn' --output text)
+
+        # 2. Check if service exists
+        SERVICE_STATUS=$(aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --query 'services[0].status' --output text)
+
+        if [ "$SERVICE_STATUS" == "ACTIVE" ]; then
+          echo "Service exists. Updating..."
+          aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --task-definition $NEW_TASK_DEF_ARN
+        else
+          echo "Service does not exist. Creating new EC2 service..."
+          # For EC2 with bridge/host networking, we do not need network-configuration
+          aws ecs create-service \
+            --cluster $CLUSTER_NAME \
+            --service-name $SERVICE_NAME \
+            --task-definition $NEW_TASK_DEF_ARN \
+            --launch-type EC2 \
+            --desired-count 1
+        fi
+
