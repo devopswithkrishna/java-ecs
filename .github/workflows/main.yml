@@ -37,5 +37,5 @@ jobs:
     - name: Build & Push Docker Image
       run: |
         docker build -t health-api .
-        docker tag health-api:latest 336449586386.dkr.ecr.ap-south-1.amazonaws.com/health-api:latest
-        docker push 336449586386.dkr.ecr.ap-south-1.amazonaws.com/health-api:latest
+        docker tag health-api:latest 336449586386.dkr.ecr.us-east-1.amazonaws.com/health-api:latest
+        docker push 336449586386.dkr.ecr.us-east-1.amazonaws.com/health-api:latest
