@@ -55,36 +55,36 @@ jobs:
           REGION=us-east-1
           REPOSITORY_NAME=health-api
           CLUSTER=health-api-cluster
-          # Extract family and name from your local json
-          FAMILY=$(jq -r '.family' task-definition.json)
-          NAME=$(jq -r '.containerDefinitions[0].name' task-definition.json)
           SERVICE_NAME=health-api-service
           IMAGE_TAG=${{ github.sha }}
           
           # 1. Get Repository URI
           REPOSITORY_URI=$(aws ecr describe-repositories --repository-names ${REPOSITORY_NAME} --region ${REGION} | jq -r .repositories[].repositoryUri)
           
-          # 2. Update JSON with the new Image URI
-          # Note: Ensure your json file has a placeholder like "IMAGE_PLACEHOLDER" or use jq to inject it
+          # 2. Update JSON with the new Image URI using jq
           jq --arg IMG "$REPOSITORY_URI:$IMAGE_TAG" '.containerDefinitions[0].image = $IMG' task-definition.json > final-taskdef.json
 
-          # 3. Register the task definition and get the new Revision
+          # 3. Register the task definition
           NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json file://final-taskdef.json --region ${REGION})
           REVISION=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.revision)
+          FAMILY=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.family)
 
-          # 4. Check if service exists (Failures array will be empty if service exists)
+          # 4. Check if service exists
           SERVICE_EXISTS=$(aws ecs describe-services --services ${SERVICE_NAME} --cluster ${CLUSTER} --region ${REGION} | jq -r '.services | length')
 
           if [ "$SERVICE_EXISTS" -gt "0" ]; then
-            echo "Updating existing service to revision $REVISION..."
+            echo "Updating existing service..."
             aws ecs update-service --cluster ${CLUSTER} --region ${REGION} --service ${SERVICE_NAME} --task-definition ${FAMILY}:${REVISION}
           else
-            echo "Creating new EC2 service with awsvpc networking..."
+            echo "Creating new EC2 service..."
+
+            # 5. GET VPC ID from a Subnet or existing EC2 instance in the cluster
+            # This fetches the VPC ID of the first subnet found in the region to ensure consistency
+            VPC_ID=$(aws ec2 describe-subnets --region ${REGION} --query 'Subnets[0].VpcId' --output text)
             
-            # 5. Automatically fetch Subnets and a Security Group (Required for awsvpc mode)
-            # Replace these filters if you want specific subnets
-            SUBNETS=$(aws ec2 describe-subnets --region ${REGION} --query 'Subnets[*].SubnetId' --output text | sed 's/\t/,/g')
-            SEC_GROUP=$(aws ec2 describe-security-groups --region ${REGION} --group-names "default" --query 'SecurityGroups[0].GroupId' --output text)
+            # 6. GET Subnets and Security Group for THAT SPECIFIC VPC
+            SUBNETS=$(aws ec2 describe-subnets --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | sed 's/\t/,/g')
+            SEC_GROUP=$(aws ec2 describe-security-groups --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text)
 
             aws ecs create-service \
               --service-name ${SERVICE_NAME} \
@@ -95,3 +95,4 @@ jobs:
               --desired-count 1 \
               --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SEC_GROUP],assignPublicIp=DISABLED}"
           fi
+
