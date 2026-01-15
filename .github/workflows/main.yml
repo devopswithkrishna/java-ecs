@@ -38,10 +38,9 @@ jobs:
         REPOSITORY_URI=336449586386.dkr.ecr.us-east-1.amazonaws.com
         IMAGE_TAG=${{ github.sha }}
         
-        # Build and push using the SHA tag to ensure uniqueness
-        docker build -t $REPOSITORY_URI:$IMAGE_TAG -t $REPOSITORY_URI:latest .
+        # Build and push with unique SHA tag
+        docker build -t $REPOSITORY_URI:$IMAGE_TAG .
         docker push $REPOSITORY_URI:$IMAGE_TAG
-        docker push $REPOSITORY_URI:latest
         
         echo "image=$REPOSITORY_URI:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
@@ -52,11 +51,10 @@ jobs:
           SERVICE_NAME=health-api-service
           IMAGE_URI=${{ steps.build-image.outputs.image }}
           
-          # 1. Update JSON with the specific Image URI pushed above
-          # Added [0] to correctly target the first container in the array
+          # 1. Update task-definition.json with the new unique Image URI
           jq --arg IMG "$IMAGE_URI" '.containerDefinitions[0].image = $IMG' task-definition.json > final-taskdef.json
           
-          # 2. Register the task definition
+          # 2. Register the new revision
           NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json file://final-taskdef.json --region ${REGION})
           REVISION=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.revision)
           FAMILY=$(echo $NEW_TASK_INFO | jq -r .taskDefinition.family)
@@ -66,14 +64,17 @@ jobs:
           
           if [ "$SERVICE_EXISTS" -gt "0" ]; then
             echo "Updating existing service to revision $REVISION..."
-            aws ecs update-service --cluster ${CLUSTER} --region ${REGION} --service ${SERVICE_NAME} --task-definition ${FAMILY}:${REVISION}
+            # Use --force-new-deployment to ensure ECS pulls the new image tag immediately
+            aws ecs update-service \
+              --cluster ${CLUSTER} \
+              --service ${SERVICE_NAME} \
+              --task-definition ${FAMILY}:${REVISION} \
+              --force-new-deployment \
+              --region ${REGION}
           else
             echo "Creating new EC2 service..."
-            
-            # 4. Get VPC ID (ensures subnets are all from the same VPC)
+            # 4. Get Network Config (Required for awsvpc mode)
             VPC_ID=$(aws ec2 describe-subnets --region ${REGION} --query 'Subnets[0].VpcId' --output text)
-            
-            # 5. Get Subnets and Security Group for that VPC
             SUBNETS=$(aws ec2 describe-subnets --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | sed 's/\t/,/g')
             SEC_GROUP=$(aws ec2 describe-security-groups --region ${REGION} --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text)
             
