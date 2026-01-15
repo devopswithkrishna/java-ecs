@@ -28,10 +28,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ap-south-1
 
-    - name: Login to ECR
+    - name: Login to Amazon ECR
       run: |
-        aws ecr get-login-password --region ap-south-1 \
-        | docker login --username devops --password-stdin ${{ secrets.ECR_REGISTRY }}
+         aws ecr get-login-password --region ap-south-1 \
+         | docker login --username AWS --password-stdin \ 
+         336449586386.dkr.ecr.ap-south-1.amazonaws.com
+
 
     - name: Build & Push Docker Image
       run: |
