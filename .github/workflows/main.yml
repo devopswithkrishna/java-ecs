@@ -58,7 +58,7 @@ jobs:
       run: |
           REGION=us-east-1
           CLUSTER=health-api-cluster
-          SERVICE_NAME=health-api-service
+          SERVICE_NAME=health-api-srvc
           IMAGE_URI=${{ steps.build-image.outputs.image }}
           
           # 1. Update task-definition.json using jq (targets first container in array)
